@@ -1,6 +1,6 @@
-from fastapi import FastAPI, Request, Depends, HTTPException
+from fastapi import FastAPI, Request, Depends, HTTPException, status
 from fastapi.responses import HTMLResponse
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -28,7 +28,7 @@ def get_db():
     finally:
         db.close()
 
-API_URL = "AIzaSyDfZG5sFwMm4o9k6IkTtwVb0nnfkEPDvtU"  # ← Replace with your key
+API_URL = "AIzaSyBhQpytzAeNrvI4w4WF3lX_zG7jIvpI3ro"  # ← Replace with your key
 genai.configure(api_key=API_URL)
 model = genai.GenerativeModel('models/gemini-1.5-flash-latest')
 
@@ -49,6 +49,18 @@ def generate_news(prompt: str):
         return response.text
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Gemini API error: {str(e)}")
+
+@app.middleware("http")
+async def add_process_time_header(request: Request, call_next):
+    try:
+        response = await call_next(request)
+        return response
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"message": str(e)}
+        )
+    
 
 @app.post("/signup")
 async def signup(request: Request, db: Session = Depends(get_db)):
@@ -81,8 +93,8 @@ async def signup(request: Request, db: Session = Depends(get_db)):
             content={"message": "Username already exists"}
         )
     
-@app.post("/login")
-async def login(request: Request, db: Session = Depends(get_db)):
+# @app.post("/login")
+# async def login(request: Request, db: Session = Depends(get_db)):
     form_data = await request.form()
     username = form_data.get("username")
     password = form_data.get("password")
@@ -99,6 +111,58 @@ async def login(request: Request, db: Session = Depends(get_db)):
         expires_delta=timedelta(minutes=10)
     )
     return {"access_token": access_token, "token_type": "bearer"}
+
+# Update login endpoint to set cookie
+@app.post("/login")
+async def login(request: Request, db: Session = Depends(get_db)):
+    form_data = await request.form()
+    username = form_data.get("username")
+    password = form_data.get("password")
+    
+    user = db.query(User).filter(User.username == username).first()
+    if not user or not bcrypt.checkpw(password.encode('utf-8'), user.hashed_password.encode('utf-8')):
+        return JSONResponse(
+            status_code=401,
+            content={"message": "Invalid credentials"}
+        )
+    
+    user.generation_count = 0
+    db.commit()
+
+    access_token = auth.create_access_token(data={"sub": username})
+    response = JSONResponse(content={"success": True})
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        max_age=1800,
+    )
+    return response
+
+# Update generate news endpoint
+@app.post("/generate-news")
+async def generate_news_endpoint(request: Request, 
+                               db: Session = Depends(get_db),
+                               current_user: str = Depends(utils.get_current_user)):
+    try:
+        user = db.query(User).filter(User.username == current_user).first()
+        
+        if user.generation_count >= 5:
+            response = RedirectResponse(url="/login")
+            response.delete_cookie("access_token")
+            return response
+            
+        generated_text = generate_news(request.query_params.get("prompt", ""))
+        
+        # Update generation count
+        user.generation_count += 1
+        db.commit()
+        
+        return JSONResponse(content={"news": generated_text})
+    
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"News generation failed: {str(e)}")
 
 # @app.post("/generate-news")
 # async def generate_news_endpoint(request: Request, 
@@ -132,43 +196,56 @@ async def login(request: Request, db: Session = Depends(get_db)):
 #             content={"message": f"News generation failed: {str(e)}"}
 #         )
 
-@app.post("/generate-news")
-async def generate_news_endpoint(request: Request, 
-                               db: Session = Depends(get_db),
-                               current_user: str = Depends(utils.get_current_user)):
-    try:
-        user = db.query(User).filter(User.username == current_user).first()
+# @app.post("/generate-news")
+# async def generate_news_endpoint(request: Request, 
+#                                db: Session = Depends(get_db),
+#                                current_user: str = Depends(utils.get_current_user)):
+#     try:
+#         user = db.query(User).filter(User.username == current_user).first()
         
-        if user.generation_count >= 5:
-            # Clear the generation count and force logout
-            user.generation_count = 0
-            db.commit()
-            return JSONResponse(
-                status_code=403,
-                content={"message": "Please re-authenticate"}
-            )
+#         if user.generation_count >= 5:
+#             # Clear the generation count and force logout
+#             user.generation_count = 0
+#             db.commit()
+#             return JSONResponse(
+#                 status_code=403,
+#                 content={"message": "Please re-authenticate"}
+#             )
             
-        form_data = await request.form()
-        prompt = form_data.get("prompt", "Generate news about")
+#         form_data = await request.form()
+#         prompt = form_data.get("prompt", "Generate news about")
         
-        generated_text = generate_news(prompt)
+#         generated_text = generate_news(prompt)
         
-        # Update generation count
-        user.generation_count += 1
-        db.commit()
+#         # Update generation count
+#         user.generation_count += 1
+#         db.commit()
         
-        return JSONResponse(content={"news": generated_text})
+#         return JSONResponse(content={"news": generated_text})
     
-    except Exception as e:
-        db.rollback()
-        return JSONResponse(
-            status_code=500,
-            content={"message": f"News generation failed: {str(e)}"}
-        )
+#     except Exception as e:
+#         db.rollback()
+#         return JSONResponse(
+#             status_code=500,
+#             content={"message": f"News generation failed: {str(e)}"}
+#         )
 
+# @app.get("/", response_class=HTMLResponse)
+# async def read_root(request: Request):
+#     return templates.TemplateResponse("index.html", {"request": request})
 @app.get("/", response_class=HTMLResponse)
-async def read_root(request: Request):
+async def read_root(request: Request, current_user: str = Depends(utils.get_current_user)):
     return templates.TemplateResponse("index.html", {"request": request})
+
+# Add exception handler
+@app.exception_handler(HTTPException)
+async def custom_exception_handler(request: Request, exc: HTTPException):
+    if exc.status_code in (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN):
+        return RedirectResponse(url="/login")
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"message": exc.detail},
+    )
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):

@@ -1,5 +1,16 @@
 document.addEventListener('DOMContentLoaded', () => {
-    const handleFormSubmit = async (formId, endpoint, successCallback) => {
+    // Universal error handler
+    const handleApiError = (response) => {
+        if (response.status === 401 || response.status === 403) {
+            alert('Session expired. Please login again.');
+            window.location.href = '/login';
+            return true;
+        }
+        return false;
+    };
+
+    // Generic form handler
+    const handleFormSubmit = (formId, endpoint, successCallback) => {
         const form = document.getElementById(formId);
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -12,42 +23,43 @@ document.addEventListener('DOMContentLoaded', () => {
                         'Content-Type': 'application/x-www-form-urlencoded',
                     },
                     body: new URLSearchParams(formData),
+                    credentials: 'include'
                 });
-                
+    
+                // Handle non-JSON responses
+                const contentType = response.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    throw new Error('Invalid server response');
+                }
+    
                 const result = await response.json();
                 
                 if (!response.ok) {
-                    let errorMessage = 'Something went wrong';
-                    try {
-                        const result = await response.json();
-                        errorMessage = result.message || errorMessage;
-                    } catch(e) {/* Ignore JSON parse errors */}
-                    
-                    if (response.status === 401) {
-                        alert('Please login first');
-                        localStorage.removeItem('access_token');
-                        window.location.href = '/login';
-                        return;
-                    }
-                    throw new Error(errorMessage);
+                    throw new Error(result.message || 'Request failed');
                 }
                 
                 successCallback(result);
             } catch (error) {
                 alert(error.message);
+                if (error.message.includes('Invalid server response')) {
+                    window.location.href = '/login';
+                }
             }
         });
     };
 
-    // Handle login
-    if (document.getElementById('loginForm')) {
-        handleFormSubmit('loginForm', '/login', (result) => {
-            localStorage.setItem('access_token', result.access_token);
-            window.location.href = '/';
-        });
-    }
+    // Login Handler
+if (document.getElementById('loginForm')) {
+    handleFormSubmit('loginForm', '/login', (result) => {
+        if (result.success) {
+            window.location.href = '/'; // Redirect on success
+        } else {
+            alert(result.message || 'Login failed');
+        }
+    });
+}
 
-    // Handle signup
+    // Signup Handler
     if (document.getElementById('signupForm')) {
         handleFormSubmit('signupForm', '/signup', () => {
             alert('Signup successful! Please login.');
@@ -55,7 +67,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Handle news generation
+    // News Generation Handler
     if (document.getElementById('newsForm')) {
         const newsForm = document.getElementById('newsForm');
         const newsResult = document.getElementById('newsResult');
@@ -63,45 +75,44 @@ document.addEventListener('DOMContentLoaded', () => {
         newsForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             const prompt = document.getElementById('prompt').value;
-            const token = localStorage.getItem('access_token');
             
             try {
                 const response = await fetch('/generate-news', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/x-www-form-urlencoded',
-                        'Authorization': `Bearer ${token}`
                     },
                     body: new URLSearchParams({ prompt }),
+                    credentials: 'include' // Required for cookies
                 });
-                
+
+                if (handleApiError(response)) return;
+
                 const result = await response.json();
                 
-                if (!response.ok) {
-                    let errorMessage = 'Please login again to continue..';
-                    try {
-                        const result = await response.json();
-                        errorMessage = result.message || errorMessage ;
-                        
-                    } catch(e) {/* Ignore JSON parse errors */}
-                    
-                    if (response.status === 401) {
-                        alert('Please login first');
-                        localStorage.removeItem('access_token');
-                        window.location.href = '/login';
-                        return;
-                    }
-                    throw new Error(errorMessage);
+                if (response.status === 403) {
+                    alert('Limit reached! Please login again.');
+                    window.location.href = '/login';
+                    return;
                 }
-                
+
                 newsResult.textContent = result.news;
             } catch (error) {
                 alert(error.message);
-                if (error.message.includes('re-authenticate')) {
-                    localStorage.removeItem('access_token');
-                    window.location.href = '/login';
-                }
             }
         });
     }
+
+    // Auto-redirect if not logged in
+    (async () => {
+        if (window.location.pathname === '/') {
+            try {
+                await fetch('/check-auth', {
+                    credentials: 'include'
+                });
+            } catch (error) {
+                window.location.href = '/login';
+            }
+        }
+    })();
 });
