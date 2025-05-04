@@ -1,4 +1,6 @@
-AIzaSyB_Vt2KsTL1SWmgZNCnG0a2NDFao0PN_xw
+API_KEY = AIzaSyB_Vt2KsTL1SWmgZNCnG0a2NDFao0PN_xw
+if this api stops working make a new one from here:
+https://aistudio.google.com/apikey
 
 pip install fastapi uvicorn sqlalchemy python-multipart bcrypt python-jose[cryptography] requests
 pip install jinja2
